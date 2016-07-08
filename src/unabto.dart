@@ -7,6 +7,7 @@ import 'package:ffi/ffi.dart';
 import 'dart:convert';
 import 'dart:async';
 import 'dart:math';
+import 'package:os/os.dart';
 
 final ForeignLibrary _unabto =
     new ForeignLibrary.fromName(ForeignLibrary.bundleLibraryName('unabtolib'));
@@ -20,6 +21,8 @@ final _unabtoRegisterEventHandler =
     _unabto.lookup('unabtoRegisterEventHandler');
 final _unabtoRegisterRandomHandler =
     _unabto.lookup('unabtoRegisterRandomHandler');
+final _unabtoRegisterDnsIsResolvedHandler =
+    _unabto.lookup('unabtoRegisterDnsIsResolvedHandler');
 
 /// uNabto request event meta data.
 class UNabtoRequest {
@@ -315,6 +318,9 @@ class UNabto {
     _unabtoRegisterRandomHandler
         .icall$1(new ForeignDartFunction(_randomHandler()));
 
+    _unabtoRegisterDnsIsResolvedHandler
+        .icall$1(new ForeignDartFunction(_dnsIsResolvedandler()));
+
     // Create a structure that contains the configuration options.
     var configOptions = new Struct.finalized(2);
     ForeignMemory id = new ForeignMemory.fromStringAsUTF8(_id);
@@ -408,6 +414,37 @@ class UNabto {
       // Fill buffer with random bytes.
       for (int i = 0; i < len; i++) buf.setUint8(i, _random.nextInt(255));
     };
+  }
+
+  /// Handles DNS is resolved? callback.
+  Function _dnsIsResolvedandler() {
+    return (int idStr, int v4addrPtr) {
+      String id = cStringToString(new ForeignPointer(idStr));
+      ForeignMemory v4addr = new ForeignMemory.fromAddress(v4addrPtr, 4);
+
+      int address = _dnsLookup(id);
+      if (address == -1) return -1;
+
+      v4addr.setUint32(0, address);
+      return 0;
+    };
+  }
+
+  /// Resolves [host]´s IPv4 address and returns it as integer.
+  /// Returns IPv4 address on success or `-1` if something went wrong.
+  int _dnsLookup(String host) {
+    // TODO: stm32
+    // https://github.com/dartino/sdk/blob/70cfbf29ebb56fff1a612a1c989096cbca21300c/pkg/stm32/lib/socket.dart
+
+    var inetAddress = sys.lookup(host);
+    if (inetAddress == null) return -1;
+    if (!inetAddress.isIP4) return -1;
+    var bytes = inetAddress.toString().split(".");
+    int address = int.parse(bytes[0]) << 24;
+    address |= int.parse(bytes[1]) << 16;
+    address |= int.parse(bytes[2]) << 8;
+    address |= int.parse(bytes[3]);
+    return address;
   }
 
   // Closes the uNabto server, and frees all resources.
