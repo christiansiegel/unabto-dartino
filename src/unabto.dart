@@ -6,6 +6,7 @@ import 'dart:dartino.ffi';
 import 'package:ffi/ffi.dart';
 import 'dart:convert';
 import 'dart:async';
+import 'dart:math';
 
 final ForeignLibrary _unabto =
     new ForeignLibrary.fromName(ForeignLibrary.bundleLibraryName('unabtolib'));
@@ -17,6 +18,8 @@ final _unabtoClose = _unabto.lookup('unabtoClose');
 final _unabtoTick = _unabto.lookup('unabtoTick');
 final _unabtoRegisterEventHandler =
     _unabto.lookup('unabtoRegisterEventHandler');
+final _unabtoRegisterRandomHandler =
+    _unabto.lookup('unabtoRegisterRandomHandler');
 
 /// uNabto request event meta data.
 class UNabtoRequest {
@@ -289,19 +292,28 @@ class UNabto {
   final String _presharedKey;
 
   /// Duration of 2 msec used for the tick timer.
-  static const _twoMillis = const Duration(milliseconds:2);
+  static const _twoMillis = const Duration(milliseconds: 2);
 
   /// The tick timer.
   Timer _tickTimer = null;
 
   /// List of registered event handling functions.
-  List _handlerFunctions = new List<ForeignDartFunction>();
+  List _eventHandlers = new List<ForeignDartFunction>();
+
+  Random _random;
 
   /// Creates a new uNabto server with given [id] and [presharedKey].
   UNabto(this._id, this._presharedKey) {
     // Allow only one instance of the uNabto server.
     if (_instance != null)
       throw new StateError("There can only be one instance of UNabto.");
+
+    // Random seed.
+    _random = new Random(42); // TODO: better seed
+
+    // Register platform adapter callback handlers.
+    _unabtoRegisterRandomHandler
+        .icall$1(new ForeignDartFunction(_randomHandler()));
 
     // Create a structure that contains the configuration options.
     var configOptions = new Struct.finalized(2);
@@ -349,8 +361,9 @@ class UNabto {
   /// Furthermore it catches potentual errors in the handler caused for example
   /// by writing to much data to the response buffer and translates it to the
   /// appropriate return value for the callback function.
-  Function _handlerWrapper(void handler(UNabtoRequest appRequest,
-      UNabtoReadBuffer readBuffer, UNabtoWriteBuffer writeBuffer)) {
+  Function _eventHandlerWrapper(
+      void handler(UNabtoRequest appRequest, UNabtoReadBuffer readBuffer,
+          UNabtoWriteBuffer writeBuffer)) {
     return (int appRequestPtr, int readBufferPtr, int writeBufferPtr) {
       try {
         var appRequest = new UNabtoRequest.fromAddress(appRequestPtr);
@@ -381,16 +394,26 @@ class UNabto {
     // takes Dart wrapper objects. We adapt the types by wrapping the consumer
     // handler in a function that creates the Dart struct wrapper objects from
     // the C struct pointers.
-    var newHandlerFunction = new ForeignDartFunction(_handlerWrapper(handler));
+    var newHandlerFunction =
+        new ForeignDartFunction(_eventHandlerWrapper(handler));
     // `unabtoRegisterEventHandler` takes an int, and a function pointer.
     _unabtoRegisterEventHandler.icall$2(queryId, newHandlerFunction);
-    _handlerFunctions.add(newHandlerFunction);
+    _eventHandlers.add(newHandlerFunction);
+  }
+
+  /// Handles random callback.
+  Function _randomHandler() {
+    return (int bufPtr, int len) {
+      ForeignMemory buf = new ForeignMemory.fromAddress(bufPtr, len);
+      // Fill buffer with random bytes.
+      for (int i = 0; i < len; i++) buf.setUint8(i, _random.nextInt(255));
+    };
   }
 
   // Closes the uNabto server, and frees all resources.
   void close() {
     if (_tickTimer != null) _tickTimer.cancel();
     _unabtoClose.vcall$0();
-    _handlerFunctions.forEach((f) => f.free());
+    _eventHandlers.forEach((f) => f.free());
   }
 }

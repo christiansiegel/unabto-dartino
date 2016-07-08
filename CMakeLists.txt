@@ -1,12 +1,15 @@
 cmake_minimum_required(VERSION 2.8)
 project(unabtolib)
 
+set(UNABTO_RANDOM_MODULE dartino)
+
 include(${CMAKE_CURRENT_SOURCE_DIR}/unabto/build/cmake/unabto_project.cmake)
 
 set(src
   ${unabto_src}
   ${unabto_module_cli_gopt_src}
   ${CMAKE_CURRENT_SOURCE_DIR}/src/lib/unabtolib.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/lib/unabtoadapter.c
 )
 
 include_directories(
