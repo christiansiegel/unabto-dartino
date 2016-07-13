@@ -14,7 +14,7 @@ char* unabtoVersion() {
 
 void unabtoConfigure(UnabtoConfig* config) {
   setbuf(stdout, NULL);
-   
+
   // Set uNabto to default values.
   nms = unabto_init_context();
 
@@ -38,25 +38,16 @@ void unabtoClose() { unabto_close(); }
 
 void unabtoTick() { unabto_tick(); }
 
-struct handler {
-  int queryId;
-  unabtoEventHandler handler;
-};
-struct handler currentHandlers[MAX_EVENT_HANDLERS];
-int nextHandlerSlot = 0;
-int unabtoRegisterEventHandler(int queryId, unabtoEventHandler handler) {
-  if (nextHandlerSlot >= MAX_EVENT_HANDLERS) return -1;
-  currentHandlers[nextHandlerSlot].queryId = queryId;
-  currentHandlers[nextHandlerSlot].handler = handler;
-  nextHandlerSlot++;
+unabtoEventHandler currentEventHandler = NULL;
+int unabtoRegisterEventHandler(unabtoEventHandler handler) {
+  if (handler == NULL) return -1;
+  currentEventHandler = handler;
   return 0;
 }
 
 application_event_result application_event(application_request* request,
                                            buffer_read_t* read_buffer,
                                            buffer_write_t* write_buffer) {
-  for (int i = 0; i < nextHandlerSlot; i++)
-    if (currentHandlers[i].queryId == request->queryId)
-      return currentHandlers[i].handler(request, read_buffer, write_buffer);
-  return AER_REQ_INV_QUERY_ID;
+  if (currentEventHandler == NULL) return AER_REQ_INV_QUERY_ID;
+  return currentEventHandler(request, read_buffer, write_buffer);
 }

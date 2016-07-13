@@ -301,7 +301,7 @@ class UNabto {
   Timer _tickTimer = null;
 
   /// List of registered event handling functions.
-  List _eventHandlers = new List<ForeignDartFunction>();
+  Map _eventHandlers = new Map<int, dynamic>();
 
   Random _random;
 
@@ -314,7 +314,10 @@ class UNabto {
     // Random seed.
     _random = new Random(42); // TODO: better seed
 
-    // Register platform adapter callback handlers.
+    // Register  callback handlers.
+    _unabtoRegisterEventHandler
+        .icall$1(new ForeignDartFunction(_eventHandler()));
+
     _unabtoRegisterRandomHandler
         .icall$1(new ForeignDartFunction(_randomHandler()));
 
@@ -361,21 +364,21 @@ class UNabto {
     return result;
   }
 
-  /// Wraps the consumer handler in a function the takes C struct pointers as
-  /// it's arguments, like the uNabto library expects it.
+  /// Handles an application event and dispatches it to the registered event
+  /// handler with the appropriate query id.
   ///
   /// Furthermore it catches potentual errors in the handler caused for example
   /// by writing to much data to the response buffer and translates it to the
   /// appropriate return value for the callback function.
-  Function _eventHandlerWrapper(
-      void handler(UNabtoRequest appRequest, UNabtoReadBuffer readBuffer,
-          UNabtoWriteBuffer writeBuffer)) {
+  Function _eventHandler() {
     return (int appRequestPtr, int readBufferPtr, int writeBufferPtr) {
       try {
         var appRequest = new UNabtoRequest.fromAddress(appRequestPtr);
         var readBuffer = new UNabtoReadBuffer.fromAddress(readBufferPtr);
         var writeBuffer = new UNabtoWriteBuffer.fromAddress(writeBufferPtr);
-        handler(appRequest, readBuffer, writeBuffer);
+        if (!_eventHandlers.containsKey(appRequest.queryId))
+          return 7; // AER_REQ_INV_QUERY_ID
+        _eventHandlers[appRequest.queryId](appRequest, readBuffer, writeBuffer);
         return 0; // AER_REQ_RESPONSE_READY
       } on UNabtoRequestTooSmallError catch (e) {
         print("The uNabto request is too small!");
@@ -395,16 +398,7 @@ class UNabto {
       int queryId,
       void handler(UNabtoRequest request, UNabtoReadBuffer readbuf,
           UNabtoWriteBuffer writeBuffer)) {
-    // The uNabto library expects a handler that takes C struct pointers as it's
-    // arguments, but the consumer of this librarty will pass in a handler that
-    // takes Dart wrapper objects. We adapt the types by wrapping the consumer
-    // handler in a function that creates the Dart struct wrapper objects from
-    // the C struct pointers.
-    var newHandlerFunction =
-        new ForeignDartFunction(_eventHandlerWrapper(handler));
-    // `unabtoRegisterEventHandler` takes an int, and a function pointer.
-    _unabtoRegisterEventHandler.icall$2(queryId, newHandlerFunction);
-    _eventHandlers.add(newHandlerFunction);
+    _eventHandlers[queryId] = handler;
   }
 
   /// Handles random callback.
@@ -451,6 +445,6 @@ class UNabto {
   void close() {
     if (_tickTimer != null) _tickTimer.cancel();
     _unabtoClose.vcall$0();
-    _eventHandlers.forEach((f) => f.free());
+    _eventHandlers.clear();
   }
 }

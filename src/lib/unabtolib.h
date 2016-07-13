@@ -30,12 +30,10 @@ void unabtoClose();
 // 10 milliseconds to prevent communication issues.
 void unabtoTick();
 
-// Registers a new event handler callback function.
-// No more than MAX_EVENT_HANDLERS handlers may be set.
-#define MAX_EVENT_HANDLERS 32
+// Registers an event handler callback function.
 typedef application_event_result (*unabtoEventHandler)(
     application_request* request, buffer_read_t* read_buffer,
     buffer_write_t* write_buffer);
-int unabtoRegisterEventHandler(int queryId, unabtoEventHandler handler);
+int unabtoRegisterEventHandler(unabtoEventHandler handler);
 
 #endif  // UNABTOLIB_H_
