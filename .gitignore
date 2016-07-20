@@ -1,3 +1,4 @@
 CMakeCache.txt
 build
 dartino-sdk
+*.h.gch
