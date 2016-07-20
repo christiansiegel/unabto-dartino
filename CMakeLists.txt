@@ -1,20 +1,20 @@
 cmake_minimum_required(VERSION 2.8)
 project(unabtolib)
 
-set(UNABTO_RANDOM_MODULE dartino)
-set(UNABTO_DNS_MODULE dartino)
-
-include(${CMAKE_CURRENT_SOURCE_DIR}/unabto/build/cmake/unabto_project.cmake)
+set(UNABTO_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/unabto)
+include(${UNABTO_ROOT}/build/cmake/unabto_files.cmake)
 
 set(src
-  ${unabto_src}
-  ${unabto_module_cli_gopt_src}
+  ${unabto_core_src}
+  ${unabto_module_crypto_generic_src}   # TODO maybe use openssl on linux
+  ${unabto_module_log_unix_src}         # TODO
+  ${unabto_module_timers_unix_src}      # TODO
   ${CMAKE_CURRENT_SOURCE_DIR}/src/lib/unabtolib.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/lib/unabtoadapter.c
 )
 
 include_directories(
-  ${unabto_include_directories}
+  ${unabto_core_include_directories}
   ${CMAKE_CURRENT_SOURCE_DIR}/src/lib
 )
 
@@ -22,7 +22,7 @@ add_definitions(
   ${unabto_definitions}
 )
 
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY 
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY
   ${CMAKE_CURRENT_SOURCE_DIR}/dartino-sdk/bin/lib
 )
 

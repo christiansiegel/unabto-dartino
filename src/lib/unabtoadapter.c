@@ -13,6 +13,66 @@ void nabto_random(uint8_t* buf, size_t len) {
   if (currentRandomHandler != NULL) currentRandomHandler(buf, len);
 }
 
+/*********** UDP init/close ***************************************************/
+
+unabtoInitSocketHandler currentInitSocketHandler = NULL;
+int unabtoRegisterInitSocketHandler(unabtoInitSocketHandler handler) {
+  if (handler == NULL) return -1;
+  currentInitSocketHandler = handler;
+  return 0;
+}
+
+bool nabto_init_socket(uint32_t localAddr, uint16_t* localPort,
+                       nabto_socket_t* socket) {
+  if (currentInitSocketHandler == NULL) return false;
+  return currentInitSocketHandler(localAddr, localPort, socket) == 0;
+}
+
+unabtoCloseSocketHandler currentCloseSocketHandler = NULL;
+int unabtoRegisterCloseSocketHandler(unabtoCloseSocketHandler handler) {
+  if (handler == NULL) return -1;
+  currentCloseSocketHandler = handler;
+  return 0;
+}
+
+void nabto_close_socket(nabto_socket_t* socket) {
+  if (currentCloseSocketHandler != NULL) currentCloseSocketHandler(socket);
+}
+
+unabtoReadHandler currentReadHandler = NULL;
+int unabtoRegisterReadHandler(unabtoReadHandler handler) {
+  if (handler == NULL) return -1;
+  currentReadHandler = handler;
+  return 0;
+}
+
+ssize_t nabto_read(nabto_socket_t socket, uint8_t* buf, size_t len,
+                   uint32_t* addr, uint16_t* port) {
+  if (currentReadHandler == NULL) return 0;
+  struct socketAndBuffer sockBuf;
+  sockBuf.socket = socket;
+  sockBuf.buf = buf;
+  sockBuf.len = len;
+  return currentReadHandler(&sockBuf, addr, port);
+}
+
+unabtoWriteHandler currentWriteHandler = NULL;
+int unabtoRegisterWriteHandler(unabtoWriteHandler handler) {
+  if (handler == NULL) return -1;
+  currentWriteHandler = handler;
+  return 0;
+}
+
+ssize_t nabto_write(nabto_socket_t socket, const uint8_t* buf, size_t len,
+                    uint32_t addr, uint16_t port) {
+  if (currentWriteHandler == NULL) return 0;
+  struct socketAndBuffer sockBuf;
+  sockBuf.socket = socket;
+  sockBuf.buf = (uint8_t*)buf;
+  sockBuf.len = len;
+  return currentWriteHandler(&sockBuf, addr, port);
+}
+
 /*************** DNS related functions ***************************************/
 
 unabtoDnsIsResolvedHandler currentDnsIsResolvedHandler = NULL;

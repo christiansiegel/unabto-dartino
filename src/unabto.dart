@@ -2,12 +2,15 @@
 
 library unabto;
 
-import 'dart:dartino.ffi';
-import 'package:ffi/ffi.dart';
-import 'dart:convert';
 import 'dart:async';
+import 'dart:collection';
+import 'dart:convert';
+import 'dart:dartino.ffi';
 import 'dart:math';
+import 'dart:typed_data';
+import 'package:ffi/ffi.dart';
 import 'package:os/os.dart';
+import 'package:socket/socket.dart';
 
 final ForeignLibrary _unabto =
     new ForeignLibrary.fromName(ForeignLibrary.bundleLibraryName('unabtolib'));
@@ -23,6 +26,13 @@ final _unabtoRegisterRandomHandler =
     _unabto.lookup('unabtoRegisterRandomHandler');
 final _unabtoRegisterDnsIsResolvedHandler =
     _unabto.lookup('unabtoRegisterDnsIsResolvedHandler');
+final _unabtoRegisterInitSocketHandler =
+    _unabto.lookup('unabtoRegisterInitSocketHandler');
+final _unabtoRegisterCloseSocketHandler =
+    _unabto.lookup('unabtoRegisterCloseSocketHandler');
+final _unabtoRegisterReadHandler = _unabto.lookup('unabtoRegisterReadHandler');
+final _unabtoRegisterWriteHandler =
+    _unabto.lookup('unabtoRegisterWriteHandler');
 
 /// uNabto request event meta data.
 class UNabtoRequest {
@@ -283,6 +293,56 @@ class UNabtoWriteBuffer extends _UNabtoBuffer {
   UNabtoWriteBuffer.fromAddress(int ptr) : super.fromAddress(ptr);
 }
 
+/// Helper class to convert an IPv4 address between integer, string and
+/// [InternetAddress] representation.
+class _InetAddress {
+  /// IP address in 32-bit integer representation.
+  int _address;
+
+  /// IP address in 32-bit integer representation.
+  int get asInt => _address;
+
+  /// IP address in string representation (e.g. "127.0.0.1").
+  String get asString => _asList.join(".");
+
+  /// IP address as [InternetAddress] object.
+  InternetAddress get asInternetAddress => new InternetAddress(_asList);
+
+  /// IP address as list of 4 bytes.
+  List<int> get _asList => [
+        (_address >> 24) & 0xff,
+        (_address >> 16) & 0xff,
+        (_address >> 8) & 0xff,
+        _address & 0xff
+      ];
+
+  /// Construct helper class from IP address in 32-bit int representation.
+  _InetAddress.fromInt(this._address);
+
+  /// Construct helper class from IP address in [string] representation (e.g.
+  /// "127.0.0.1").
+  _InetAddress.fromString(String string) {
+    var bytes = string.split(".");
+    assert(bytes.length == 4);
+    _address = int.parse(bytes[0]) << 24;
+    _address |= int.parse(bytes[1]) << 16;
+    _address |= int.parse(bytes[2]) << 8;
+    _address |= int.parse(bytes[3]);
+  }
+}
+
+/// Message tuple existing of [Datagram] and socket ID. Used in [UNabto] read
+/// and write queues.
+class _Message {
+  int _socket;
+  int get socket => _socket;
+
+  Datagram _datagram;
+  Datagram get datagram => _datagram;
+
+  _Message(this._socket, this._datagram);
+}
+
 /// The uNabto server.
 class UNabto {
   /// Single instance of this.
@@ -303,7 +363,17 @@ class UNabto {
   /// List of registered event handling functions.
   Map _eventHandlers = new Map<int, dynamic>();
 
+  /// Random generator.
   Random _random;
+
+  /// Maps socket IDs to actual instances of [DatagramSocket].
+  Map _sockets = new Map<int, DatagramSocket>();
+
+  /// Queue of UDP messages to write to the network.
+  Queue _writeQueue = new Queue<_Message>();
+
+  /// Queue of UDP messages read from the network.
+  Queue _readQueue = new Queue<_Message>();
 
   /// Creates a new uNabto server with given [id] and [presharedKey].
   UNabto(this._id, this._presharedKey) {
@@ -314,15 +384,18 @@ class UNabto {
     // Random seed.
     _random = new Random(42); // TODO: better seed
 
-    // Register  callback handlers.
-    _unabtoRegisterEventHandler
-        .icall$1(new ForeignDartFunction(_eventHandler()));
-
+    // Register callback handlers.
+    _unabtoRegisterEventHandler.icall$1(new ForeignDartFunction(_eventHandler));
     _unabtoRegisterRandomHandler
-        .icall$1(new ForeignDartFunction(_randomHandler()));
-
+        .icall$1(new ForeignDartFunction(_randomHandler));
     _unabtoRegisterDnsIsResolvedHandler
-        .icall$1(new ForeignDartFunction(_dnsIsResolvedandler()));
+        .icall$1(new ForeignDartFunction(_dnsIsResolvedHandler));
+    _unabtoRegisterInitSocketHandler
+        .icall$1(new ForeignDartFunction(_initSocketHandler));
+    _unabtoRegisterCloseSocketHandler
+        .icall$1(new ForeignDartFunction(_closeSocketHandler));
+    _unabtoRegisterReadHandler.icall$1(new ForeignDartFunction(_readHandler));
+    _unabtoRegisterWriteHandler.icall$1(new ForeignDartFunction(_writeHandler));
 
     // Create a structure that contains the configuration options.
     var configOptions = new Struct.finalized(2);
@@ -358,10 +431,17 @@ class UNabto {
     int result = _unabtoInit.icall$0();
     if (result == 0) {
       // Allow uNabto to process any new incoming telegrams every 2 msec.
-      _tickTimer =
-          new Timer.periodic(_twoMillis, (Timer t) => _unabtoTick.vcall$0());
+      _tickTimer = new Timer.periodic(_twoMillis, (Timer t) => _customTick());
     }
     return result;
+  }
+
+  /// Reads incoming messages to a queue, call unabto's tick function and then
+  /// writes queued outgoing messages to the network.
+  void _customTick() {
+    _readAll();
+    _unabtoTick.vcall$0();
+    _writeAll();
   }
 
   /// Handles an application event and dispatches it to the registered event
@@ -370,27 +450,25 @@ class UNabto {
   /// Furthermore it catches potentual errors in the handler caused for example
   /// by writing to much data to the response buffer and translates it to the
   /// appropriate return value for the callback function.
-  Function _eventHandler() {
-    return (int appRequestPtr, int readBufferPtr, int writeBufferPtr) {
-      try {
-        var appRequest = new UNabtoRequest.fromAddress(appRequestPtr);
-        var readBuffer = new UNabtoReadBuffer.fromAddress(readBufferPtr);
-        var writeBuffer = new UNabtoWriteBuffer.fromAddress(writeBufferPtr);
-        if (!_eventHandlers.containsKey(appRequest.queryId))
-          return 7; // AER_REQ_INV_QUERY_ID
-        _eventHandlers[appRequest.queryId](appRequest, readBuffer, writeBuffer);
-        return 0; // AER_REQ_RESPONSE_READY
-      } on UNabtoRequestTooSmallError catch (e) {
-        print("The uNabto request is too small!");
-        return 5; // AER_REQ_TOO_SMALL
-      } on UNabtoResponseTooLargeError catch (e) {
-        print("The uNabto response is larger than the space allocated!");
-        return 8; // AER_REQ_RSP_TOO_LARGE
-      } catch (e, stackTrace) {
-        print("Error '$e' in callback handler!");
-        return 10; // AER_REQ_SYSTEM_ERROR
-      }
-    };
+  _eventHandler(int appRequestPtr, int readBufferPtr, int writeBufferPtr) {
+    try {
+      var appRequest = new UNabtoRequest.fromAddress(appRequestPtr);
+      var readBuffer = new UNabtoReadBuffer.fromAddress(readBufferPtr);
+      var writeBuffer = new UNabtoWriteBuffer.fromAddress(writeBufferPtr);
+      if (!_eventHandlers.containsKey(appRequest.queryId))
+        return 7; // AER_REQ_INV_QUERY_ID
+      _eventHandlers[appRequest.queryId](appRequest, readBuffer, writeBuffer);
+      return 0; // AER_REQ_RESPONSE_READY
+    } on UNabtoRequestTooSmallError catch (e) {
+      print("The uNabto request is too small!");
+      return 5; // AER_REQ_TOO_SMALL
+    } on UNabtoResponseTooLargeError catch (e) {
+      print("The uNabto response is larger than the space allocated!");
+      return 8; // AER_REQ_RSP_TOO_LARGE
+    } catch (e, stackTrace) {
+      print("Error '$e' in callback handler!");
+      return 10; // AER_REQ_SYSTEM_ERROR
+    }
   }
 
   /// Registers a new event [handler] for the [queryId].
@@ -401,27 +479,155 @@ class UNabto {
     _eventHandlers[queryId] = handler;
   }
 
-  /// Handles random callback.
-  Function _randomHandler() {
-    return (int bufPtr, int len) {
-      ForeignMemory buf = new ForeignMemory.fromAddress(bufPtr, len);
-      // Fill buffer with random bytes.
-      for (int i = 0; i < len; i++) buf.setUint8(i, _random.nextInt(255));
-    };
+  /// Handles `nabto_random` callback.
+  void _randomHandler(int bufPtr, int len) {
+    ForeignMemory buf = new ForeignMemory.fromAddress(bufPtr, len);
+    // Fill buffer with random bytes.
+    for (int i = 0; i < len; i++) buf.setUint8(i, _random.nextInt(255));
   }
 
-  /// Handles DNS is resolved? callback.
-  Function _dnsIsResolvedandler() {
-    return (int idStr, int v4addrPtr) {
-      String id = cStringToString(new ForeignPointer(idStr));
-      ForeignMemory v4addr = new ForeignMemory.fromAddress(v4addrPtr, 4);
+  /// Handles `nabto_dns_is_resolved` callback.
+  ///
+  /// Looks up the given hostname and writes the resolved IPv4 address back.
+  /// Returns `0` on success or `-1` if something went wrong.
+  int _dnsIsResolvedHandler(int idStr, int v4addrPtr) {
+    String id = cStringToString(new ForeignPointer(idStr));
+    ForeignMemory v4addr = new ForeignMemory.fromAddress(v4addrPtr, 4);
 
-      int address = _dnsLookup(id);
-      if (address == -1) return -1;
+    int address = _dnsLookup(id);
+    if (address == -1) return -1;
 
-      v4addr.setUint32(0, address);
-      return 0;
-    };
+    v4addr.setUint32(0, address);
+    return 0;
+  }
+
+  /// Returns an unused socket id.
+  int _getFreeSocketId() {
+    int i = 0;
+    while (_sockets.containsKey(i)) i++;
+    return i;
+  }
+
+  /// Handles `nabto_init_socket` callback.
+  ///
+  /// Inits an new [DatagramSocket] and binds it to the given local port.
+  /// Returns `0` on success or `-1` if something went wrong.
+  int _initSocketHandler(int localAddr, int localPortPtr, int socketPtr) {
+    ForeignMemory localPort = new ForeignMemory.fromAddress(localPortPtr, 2);
+    ForeignMemory socket = new ForeignMemory.fromAddress(socketPtr, 2);
+    DatagramSocket udpSocket;
+    try {
+      udpSocket = new DatagramSocket.bind(
+          new _InetAddress.fromInt(localAddr).asString, 0);
+    } on SocketException catch (e) {
+      print(e.toString());
+      return -1;
+    }
+    localPort.setUint16(0, udpSocket.port);
+    int socketId = _getFreeSocketId();
+    socket.setInt16(0, socketId);
+    _sockets[socketId] = udpSocket;
+    return 0;
+  }
+
+  /// Handles `nabto_close_socket` callback.
+  void _closeSocketHandler(int socketPtr) {
+    ForeignMemory socket = new ForeignMemory.fromAddress(socketPtr, 2);
+    if (_sockets.containsKey(socket)) {
+      _sockets[socket].close();
+      _sockets.remove(socket);
+    }
+  }
+
+  /// Handles `nabto_read` callback.
+  ///
+  /// Instead of reading directly we need to call [_readAll] before calling the
+  /// uNabto tick function, and then read from the queue. This is due to dartino
+  /// does not allow to call a foreign function (the receive function) from
+  /// within a foreign callback.
+  int _readHandler(int sockBufPtr, int addrPtr, int portPtr) {
+    var sockBuf = new Struct.fromAddress(sockBufPtr, 3);
+    int socket = sockBuf.getInt16(0);
+    int bufPtr = sockBuf.getField(1);
+    int len = sockBuf.getUint32(2 * sockBuf.wordSize);
+    ForeignMemory buf = new ForeignMemory.fromAddress(bufPtr, len);
+    ForeignMemory addr = new ForeignMemory.fromAddress(addrPtr, 4);
+    ForeignMemory port = new ForeignMemory.fromAddress(portPtr, 2);
+
+    if (_readQueue.length > 0 && _readQueue.first.socket == socket) {
+      var datagram = _readQueue.removeFirst().datagram;
+      var inetAddr = new _InetAddress.fromString(datagram.sender.toString());
+      addr.setUint32(0, inetAddr.asInt);
+      port.setUint16(0, datagram.port);
+      var bytes = datagram.data.asUint8List();
+      assert(bytes.length <=
+          len); // TODO: split datagram and push it back to queue
+      buf.copyBytesFromList(bytes, 0, bytes.length, 0);
+      return bytes.length;
+    }
+    return 0;
+  }
+
+  /// Reads from all sockets and writes messages to queue.
+  void _readAll() {
+    _sockets.forEach((socket, v) => _read(socket));
+  }
+
+  /// Reads from socket with [socket] ID and writes message to queue.
+  void _read(int socket) {
+    if (!_sockets.containsKey(socket)) return;
+    try {
+      if (_sockets[socket].available <= 0) return;
+    } on SocketException catch (e) {
+      print(e.toString());
+      return;
+    }
+    var datagram = _sockets[socket].receive();
+    if (datagram != null) _readQueue.addLast(new _Message(socket, datagram));
+  }
+
+  /// Handles `nabto_write` callback.
+  ///
+  /// Instead of writing directly we need to call [_writeAll] after calling the
+  /// uNabto tick function, and then read from the queue. This is due to dartino
+  /// does not allow to call a foreign function (the send function) from within
+  /// a foreign callback. Thus this function also always returns successful.
+  int _writeHandler(int sockBufPtr, int addr, int port) {
+    var sockBuf = new Struct.fromAddress(sockBufPtr, 3);
+    int socket = sockBuf.getInt16(0);
+    int bufPtr = sockBuf.getField(1);
+    int len = sockBuf.getUint32(2 * sockBuf.wordSize);
+    ForeignMemory buf = new ForeignMemory.fromAddress(bufPtr, len);
+
+    Uint8List bytes = new Uint8List(len);
+    for (int i = 0; i < bytes.length; i++) {
+      bytes[i] = buf.getUint8(i);
+    }
+
+    var inetAddr = new _InetAddress.fromInt(addr).asInternetAddress;
+
+    var datagram = new Datagram(inetAddr, port, bytes.buffer);
+    _writeQueue.addLast(new _Message(socket, datagram));
+
+    return len; // TODO: is it an issue to assume this?
+  }
+
+  /// Writes message queue to the network.
+  void _writeAll() {
+    while (_writeQueue.length > 0) {
+      var msg = _writeQueue.first;
+
+      if (!_sockets.containsKey(msg.socket)) {
+        _writeQueue.removeFirst();
+        continue;
+      }
+
+      var udpSocket = _sockets[msg.socket];
+      int sent = udpSocket.send(
+          msg.datagram.sender, msg.datagram.port, msg.datagram.data);
+
+      if (sent == msg.datagram.data.lengthInBytes) _writeQueue.removeFirst();
+    }
   }
 
   /// Resolves [host]´s IPv4 address and returns it as integer.
@@ -430,15 +636,9 @@ class UNabto {
     // TODO: stm32
     // https://github.com/dartino/sdk/blob/70cfbf29ebb56fff1a612a1c989096cbca21300c/pkg/stm32/lib/socket.dart
 
-    var inetAddress = sys.lookup(host);
-    if (inetAddress == null) return -1;
-    if (!inetAddress.isIP4) return -1;
-    var bytes = inetAddress.toString().split(".");
-    int address = int.parse(bytes[0]) << 24;
-    address |= int.parse(bytes[1]) << 16;
-    address |= int.parse(bytes[2]) << 8;
-    address |= int.parse(bytes[3]);
-    return address;
+    var address = getSystem().lookup(host);
+    if (address == null || !address.isIP4) return -1;
+    return new _InetAddress.fromString(address.toString()).asInt;
   }
 
   // Closes the uNabto server, and frees all resources.
