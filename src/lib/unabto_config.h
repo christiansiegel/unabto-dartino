@@ -5,6 +5,8 @@
 // All available settings can be read about in "unabto_config_defaults.h".
 // The default value will be used if a specific setting is not set here.
 
+#define UNABTO_PLATFORM_CUSTOM                      1
+
 #define NABTO_ENABLE_STREAM                         0
 
 #define NABTO_ENABLE_LOGGING                        1

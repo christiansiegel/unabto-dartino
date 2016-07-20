@@ -31,4 +31,7 @@ typedef ssize_t (*unabtoWriteHandler)(struct socketAndBuffer* sockBuf,
                                       uint32_t addr, uint16_t port);
 int unabtoRegisterWriteHandler(unabtoWriteHandler handler);
 
+typedef nabto_stamp_t (*unabtoGetStampHandler)(void);
+int unabtoRegisterGetStampHandler(unabtoGetStampHandler handler);
+
 #endif  // UNABTOADAPTER_H_

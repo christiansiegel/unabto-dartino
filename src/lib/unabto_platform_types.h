@@ -2,20 +2,13 @@
 #define _UNABTO_PLATFORM_TYPES_H_
 
 #include <stdbool.h>
-#include <stddef.h>
 #include <stdint.h>
-#include <stdlib.h>
-#include <memory.h>
 #include <string.h>
-#include <arpa/inet.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netdb.h>
-#include <unistd.h>
-#include <inttypes.h>
-#include <time.h>
 
 #include "platforms/unabto_common_types.h"
-#include <modules/timers/unix/unabto_unix_time_types.h>
+
+typedef uint64_t nabto_stamp_t;
+typedef int64_t nabto_stamp_diff_t;
+typedef int16_t nabto_socket_t;
 
 #endif

@@ -7,8 +7,6 @@ include(${UNABTO_ROOT}/build/cmake/unabto_files.cmake)
 set(src
   ${unabto_core_src}
   ${unabto_module_crypto_generic_src}
-  ${unabto_module_log_unix_src}         # TODO
-  ${unabto_module_timers_unix_src}      # TODO
   ${CMAKE_CURRENT_SOURCE_DIR}/src/lib/unabtolib.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/lib/unabtoadapter.c
 )

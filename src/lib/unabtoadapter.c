@@ -90,3 +90,28 @@ nabto_dns_status_t nabto_dns_is_resolved(const char* id, uint32_t* v4addr) {
     status = currentDnsIsResolvedHandler(id, v4addr);
   return status == 0 ? NABTO_DNS_OK : NABTO_DNS_ERROR;
 }
+
+/*************** Time stamp related functions ********************************/
+
+unabtoGetStampHandler currentGetStampHandler = NULL;
+int unabtoRegisterGetStampHandler(unabtoGetStampHandler handler) {
+  if (handler == NULL) return -1;
+  currentGetStampHandler = handler;
+  return 0;
+}
+nabto_stamp_t nabtoGetStamp() {
+  if (currentGetStampHandler != NULL) return currentGetStampHandler();
+  return 0;
+}
+
+#define MAX_STAMP_DIFF 0x7fffffff;
+bool nabtoIsStampPassed(nabto_stamp_t* stamp) {
+  return *stamp - nabtoGetStamp() > (uint32_t)MAX_STAMP_DIFF;
+}
+
+nabto_stamp_diff_t nabtoStampDiff(nabto_stamp_t* newest,
+                                  nabto_stamp_t* oldest) {
+  return (*newest - *oldest);
+}
+
+int nabtoStampDiff2ms(nabto_stamp_diff_t diff) { return (int)diff; }

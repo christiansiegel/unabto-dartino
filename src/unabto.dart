@@ -33,6 +33,8 @@ final _unabtoRegisterCloseSocketHandler =
 final _unabtoRegisterReadHandler = _unabto.lookup('unabtoRegisterReadHandler');
 final _unabtoRegisterWriteHandler =
     _unabto.lookup('unabtoRegisterWriteHandler');
+final _unabtoRegisterGetStampHandler =
+    _unabto.lookup('unabtoRegisterGetStampHandler');
 
 /// uNabto request event meta data.
 class UNabtoRequest {
@@ -396,6 +398,8 @@ class UNabto {
         .icall$1(new ForeignDartFunction(_closeSocketHandler));
     _unabtoRegisterReadHandler.icall$1(new ForeignDartFunction(_readHandler));
     _unabtoRegisterWriteHandler.icall$1(new ForeignDartFunction(_writeHandler));
+    _unabtoRegisterGetStampHandler
+        .icall$1(new ForeignDartFunction(_getStampHandler));
 
     // Create a structure that contains the configuration options.
     var configOptions = new Struct.finalized(2);
@@ -641,10 +645,17 @@ class UNabto {
     return new _InetAddress.fromString(address.toString()).asInt;
   }
 
-  // Closes the uNabto server, and frees all resources.
+  /// Closes the uNabto server, and frees all resources.
   void close() {
     if (_tickTimer != null) _tickTimer.cancel();
     _unabtoClose.vcall$0();
     _eventHandlers.clear();
+  }
+
+  /// Handles the `nabtoGetStamp` callback.
+  ///
+  /// Returns the milliseconds since the "Unix epoch" 1970-01-01T00:00:00Z (UTC)
+  int _getStampHandler() {
+    return new DateTime.now().millisecondsSinceEpoch;
   }
 }
