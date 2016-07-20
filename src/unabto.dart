@@ -382,7 +382,7 @@ class UNabto {
       throw new StateError("There can only be one instance of UNabto.");
 
     // Random seed.
-    _random = new Random(42); // TODO: better seed
+    _random = new Random(new DateTime.now().microsecondsSinceEpoch);
 
     // Register callback handlers.
     _unabtoRegisterEventHandler.icall$1(new ForeignDartFunction(_eventHandler));
