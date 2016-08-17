@@ -5,15 +5,19 @@ library unabto;
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
+import 'dart:dartino';
 import 'dart:dartino.ffi';
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
-import 'package:os/os.dart';
+import 'package:os/os.dart' as os;
 import 'package:socket/socket.dart';
+import 'package:stm32/ethernet.dart' as stm32;
 
-final ForeignLibrary _unabto =
-    new ForeignLibrary.fromName(ForeignLibrary.bundleLibraryName('unabtolib'));
+final ForeignLibrary _unabto = Foreign.platform == Foreign.FREERTOS
+    ? ForeignLibrary.main
+    : new ForeignLibrary.fromName(
+        ForeignLibrary.bundleLibraryName('unabtolib-posix'));
 
 final _unabtoVersion = _unabto.lookup('unabtoVersion');
 final _unabtoConfigure = _unabto.lookup('unabtoConfigure');
@@ -35,6 +39,10 @@ final _unabtoRegisterWriteHandler =
     _unabto.lookup('unabtoRegisterWriteHandler');
 final _unabtoRegisterGetStampHandler =
     _unabto.lookup('unabtoRegisterGetStampHandler');
+
+final _lookupHost = Foreign.platform == Foreign.FREERTOS
+    ? ForeignLibrary.main.lookup("network_lookup_host")
+    : null;
 
 /// uNabto request event meta data.
 class UNabtoRequest {
@@ -302,16 +310,19 @@ class _InetAddress {
   int _address;
 
   /// IP address in 32-bit integer representation.
-  int get asInt => _address;
+  int toInt() => _address;
 
   /// IP address in string representation (e.g. "127.0.0.1").
-  String get asString => _asList.join(".");
+  String toString() => _toList().join(".");
 
   /// IP address as [InternetAddress] object.
-  InternetAddress get asInternetAddress => new InternetAddress(_asList);
+  os.InternetAddress toInternetAddress() =>
+      Foreign.platform == Foreign.FREERTOS
+          ? new stm32.InternetAddress(_toList())
+          : new os.InternetAddress(_toList());
 
   /// IP address as list of 4 bytes.
-  List<int> get _asList => [
+  List<int> _toList() => [
         (_address >> 24) & 0xff,
         (_address >> 16) & 0xff,
         (_address >> 8) & 0xff,
@@ -350,6 +361,22 @@ class UNabto {
   /// Single instance of this.
   static UNabto _instance = null;
 
+  /// Fallback address if DHCP fails.
+  static const _fallbackAddress =
+      const stm32.InternetAddress(const <int>[192, 168, 0, 10]);
+
+  /// Fallback netmask if DHCP fails.
+  static const _fallbackNetmask =
+      const stm32.InternetAddress(const <int>[255, 255, 255, 0]);
+
+  /// Fallback gateway if DHCP fails.
+  static const _fallbackGateway =
+      const stm32.InternetAddress(const <int>[192, 168, 0, 1]);
+
+  /// Fallback dns server if DHCP fails.
+  static const _fallbackDnsServer =
+      const stm32.InternetAddress(const <int>[8, 8, 8, 8]);
+
   /// Nabto ID of the server.
   final String _id;
 
@@ -382,6 +409,10 @@ class UNabto {
     // Allow only one instance of the uNabto server.
     if (_instance != null)
       throw new StateError("There can only be one instance of UNabto.");
+
+    // If we are running on a dev board, we need to initialize the network.
+    if (Foreign.platform == Foreign.FREERTOS)
+      _initializeNetwork();
 
     // Random seed.
     _random = new Random(new DateTime.now().microsecondsSinceEpoch);
@@ -420,6 +451,23 @@ class UNabto {
     // Save current instance in static `_instance` variable to prevent to throw
     // an error on attempts to create a second instance.
     _instance = this;
+  }
+
+  /// Initialize the network stack and wait until the network interface has
+  /// either received an IP address using DHCP or given up and used the provided
+  /// fallback [address], [netmask], [gateway] and [dnsServer].
+  void _initializeNetwork(
+      {stm32.InternetAddress address: _fallbackAddress,
+      stm32.InternetAddress netmask: _fallbackNetmask,
+      stm32.InternetAddress gateway: _fallbackGateway,
+      stm32.InternetAddress dnsServer: _fallbackDnsServer}) {
+    if (!stm32.ethernet
+        .initializeNetworkStack(address, netmask, gateway, dnsServer)) {
+      throw "Failed to initialize network stack";
+    }
+    while (stm32.NetworkInterface.list().first.addresses.isEmpty) {
+      sleep(10);
+    }
   }
 
   /// Returns the version of the uNabto server.
@@ -522,7 +570,7 @@ class UNabto {
     DatagramSocket udpSocket;
     try {
       udpSocket = new DatagramSocket.bind(
-          new _InetAddress.fromInt(localAddr).asString, 0);
+          new _InetAddress.fromInt(localAddr).toString(), localPort.getUint16(0));
     } on SocketException catch (e) {
       print(e.toString());
       return -1;
@@ -536,7 +584,7 @@ class UNabto {
 
   /// Handles `nabto_close_socket` callback.
   void _closeSocketHandler(int socketPtr) {
-    ForeignMemory socket = new ForeignMemory.fromAddress(socketPtr, 2);
+    int socket = new ForeignMemory.fromAddress(socketPtr, 2).getInt16(0);
     if (_sockets.containsKey(socket)) {
       _sockets[socket].close();
       _sockets.remove(socket);
@@ -561,7 +609,7 @@ class UNabto {
     if (_readQueue.length > 0 && _readQueue.first.socket == socket) {
       var datagram = _readQueue.removeFirst().datagram;
       var inetAddr = new _InetAddress.fromString(datagram.sender.toString());
-      addr.setUint32(0, inetAddr.asInt);
+      addr.setUint32(0, inetAddr.toInt());
       port.setUint16(0, datagram.port);
       var bytes = datagram.data.asUint8List();
       assert(bytes.length <=
@@ -608,7 +656,7 @@ class UNabto {
       bytes[i] = buf.getUint8(i);
     }
 
-    var inetAddr = new _InetAddress.fromInt(addr).asInternetAddress;
+    var inetAddr = new _InetAddress.fromInt(addr).toInternetAddress();
 
     var datagram = new Datagram(inetAddr, port, bytes.buffer);
     _writeQueue.addLast(new _Message(socket, datagram));
@@ -634,16 +682,38 @@ class UNabto {
     }
   }
 
-  /// Resolves [host]´s IPv4 address and returns it as integer.
+  /// Resolves [host]´s IPv4 address and returns it as integer in host byte
+  /// order.
   /// Returns IPv4 address on success or `-1` if something went wrong.
   int _dnsLookup(String host) {
-    // TODO: stm32
-    // https://github.com/dartino/sdk/blob/70cfbf29ebb56fff1a612a1c989096cbca21300c/pkg/stm32/lib/socket.dart
-
-    var address = getSystem().lookup(host);
-    if (address == null || !address.isIP4) return -1;
-    return new _InetAddress.fromString(address.toString()).asInt;
+    if (Foreign.platform == Foreign.FREERTOS) {
+      ForeignMemory string = new ForeignMemory.fromStringAsUTF8(host);
+      int address = 0;
+      try {
+        address = _lookupHost.icall$1(string.address);
+      } finally {
+        string.free();
+      }
+      if (address == 0)
+        return -1;
+      else
+        return _ntohl(address);
+    } else {
+      var address = os.getSystem().lookup(host);
+      if (address == null || !address.isIP4)
+        return -1;
+      else
+        return new _InetAddress.fromString(address.toString()).toInt();
+    }
   }
+
+  int _htonl(int value) =>
+      (value & 0xFF000000) >> 24 |
+      (value & 0x00FF0000) >> 8 |
+      (value & 0x0000FF00) << 8 |
+      (value & 0x000000FF) << 24;
+
+  int _ntohl(int value) => _htonl(value);
 
   /// Closes the uNabto server, and frees all resources.
   void close() {
